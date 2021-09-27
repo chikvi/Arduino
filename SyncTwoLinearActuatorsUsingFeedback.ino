@@ -1,21 +1,18 @@
-//Actuator 1
-float conNum1 = 0.01272534465;         // Constant to convert ADC to Inches
-                                // Equal to (943 (ADC at 12") - 0 (ADC at 0")/12")^-1
-float conNum2 = 0.01243339254;         // Constant to convert ADC to Inches
-                                // Equal to (1023 (ADC at 12") - 475 (ADC at 0")/12")^-1
-                                //.011730205
-
 #define numOfActuators 2
 int pinSet1[numOfActuators] = {5, 10};
 int pinSet2[numOfActuators] = {6, 11};
 
 int opticalPins[numOfActuators] = {A0, A1};
 
-float constants[numOfActuators] = {0.01272534465, 0.011730205279};
+double constants[numOfActuators] = {0.012565445026178, 0.0126448893572181};
 float analogStartValues[numOfActuators] = {0, 0};
 
 int counter[numOfActuators] = {};
 float current_pos[numOfActuators] = {0.0, 0.0};
+
+//errors measured for safeguarding
+float extension_diff_errors = -0.09;
+float retraction_diff_errors = -0.09;
 
 int Direction;
 float diff_dist_allowed = 0.04;   //  Max allowed distance between two actuators
@@ -23,12 +20,13 @@ float present_diff = 0.0;
 int Speed = 255;
 
 unsigned long startMillis = 0;
-
 unsigned long lastFrame = 0;
 
 int synchronizeInterval = 200;
 
-float act1_curr_pos = 0.0, act2_curr_pos = 0.0;
+double act1_curr_pos = 0.0, act2_curr_pos = 0.0;
+double max_diff = 0.25;
+
                                 
 void setup() {
   
@@ -45,11 +43,7 @@ void setup() {
 
   startMillis = millis();
 
-  Direction = -1;
-
-  //Just start the code whatever
-  driveActuator(0, Direction, Speed*0.25);
-  driveActuator(1, Direction, Speed*0.25);
+  Direction = 1;
 }
 
 
@@ -57,62 +51,85 @@ void loop() {
 
   //Current positions
   act1_curr_pos = readPotentiometer(0, analogStartValues[0]);
-  act2_curr_pos = readPotentiometer(1, analogStartValues[1]); //measured error for potentiometer
-
+  act2_curr_pos = readPotentiometer(1, analogStartValues[1]); 
 
   //Note: This difference is based on Actuator1 and Actuator2 
   present_diff = act1_curr_pos - act2_curr_pos;
-
-  Serial.print("Actuator 1:\t");
-  Serial.print(act1_curr_pos);
-  Serial.print("\tActuator 2:\t");
-  Serial.print(act2_curr_pos);
-  Serial.print("\tDiff :\t");
+  
+  Serial.print("Diff :\t");
   Serial.println(present_diff);
   
   moveActuatorParallel(Direction);
   
-
-  lastFrame = millis();
-  
   //Exit Program after extension or retraction
-  if((act1_curr_pos || act2_curr_pos) >11.9 && Direction == 1)
+  if((act1_curr_pos || act2_curr_pos) > 11.9 && Direction == 1)
     exit(0);
-  if((act1_curr_pos || act2_curr_pos) <0.01 && Direction == -1)
+  if((act1_curr_pos || act2_curr_pos) < 0.01 && Direction == -1)
     exit(0); 
 }
 
 
 void moveActuatorParallel(int Direction)
 {
-  //if(millis() - startMillis < synchronizeInterval)
-  //{
-    if(abs(present_diff) > diff_dist_allowed){
+  //This will make a little or no difference
+  float actual_dist_allowed = 0;
+  if(Direction == 1)
+  {
+      actual_dist_allowed = abs(extension_diff_errors) + abs(diff_dist_allowed);
+  }else if(Direction == -1)
+  {
+      actual_dist_allowed = abs(retraction_diff_errors) + abs(diff_dist_allowed);
+  }
+
+  
+  if(abs(present_diff) > actual_dist_allowed +0.03){
 
       //If direction is negative the diff will always be negative
-      if(Direction==-1)
-        present_diff *= -1;
+    if(Direction==-1)
+      present_diff *= -1;
 
-      float speedCoef = calcSpeedCo(present_diff);
+      //float speedCoef = calcSpeedCo(present_diff);
+      float speedCoef =  calcSpeedCo1(present_diff);
+
+      if(speedCoef == 0)
+      {
+          driveActuator(0, Direction, 0);
+          driveActuator(1, Direction, 0);
+
+          exit(0);
+      }
+      
       if(present_diff>0)
       {
-        //Serial.println("YOU HU");
-        //stopActuator(0);
-        driveActuator(0, Direction, Speed * speedCoef);
-        driveActuator(1, Direction, Speed); 
+        Serial.println("YOU HU");
+
+          driveActuator(0, Direction, Speed * speedCoef);
+          driveActuator(1, Direction, Speed); //Try 1- speedCoef Later
+
+          Serial.print("Speed Actuator 1: ");
+          Serial.println(Speed * speedCoef);
+          Serial.print("Speed Actuator 2: ");
+          Serial.println(Speed);
+      
+        
       }else{
-        //Serial.println("HU YU");
-        //stopActuator(1);
-        driveActuator(1, Direction, Speed * speedCoef);
-        driveActuator(0, Direction, Speed); 
+        Serial.println("HU YOU");
+          driveActuator(1, Direction, Speed * speedCoef);
+          driveActuator(0, Direction, Speed); 
+
+          Serial.print("Speed Actuator 1: ");
+          Serial.println(Speed);
+          Serial.print("Speed Actuator 2: ");
+          Serial.println(Speed * speedCoef);
+      
       }
-    //}
 
   }else{
     startMillis = millis();
     
+    driveActuator(1, Direction, Speed);
+    driveActuator(0, Direction, Speed); 
   }
-  //exit(0);
 }
 
 
@@ -138,6 +155,22 @@ void driveActuator(int actuatorNum, int Direction, int s)
 }
 
 
+void stopActuator(int idx){
+
+  float firstFrame = millis();
+  float currentFrame = millis();
+
+  //synchronization bar is set to 200
+  while(currentFrame < firstFrame + 200)
+  {
+    analogWrite(pinSet1[idx], 0);
+    analogWrite(pinSet2[idx], 0);
+    
+    currentFrame = millis();
+  }
+}
+
+
 /*Function to read Potentiometer and Convert it to Inches*/
 float readPotentiometer(int idx, int start_analog){
   //Serial.println("Reading the position of potentiometer:");  
@@ -145,14 +178,10 @@ float readPotentiometer(int idx, int start_analog){
 }
 
 
-float calcSpeedCo(float diff)
+double calcSpeedCo1(double diff)
 {
-  return (1.0 - (abs(diff)/12.0)); // CalculateCoeff
-}
+  if(abs(diff) > max_diff)
+    return 0;
 
-void printAnalogValues(){
-  Serial.println("Analog Value 1:");
-  Serial.println(analogRead(A0));
-  Serial.println("Analog Value 2:");
-  Serial.println(analogRead(A1));
+  return (1 - pow((abs(diff)/max_diff), 0.5));
 }
